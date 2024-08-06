@@ -1,4 +1,6 @@
-Model pipeline that performs joint fusion (Type I and II) using electrocardiograms (ECGs) and echocardiograms (echos)
+Model pipeline that performs joint fusion (Type I and II) using electrocardiograms (ECGs) and echocardiograms (echos) to perform differential diagnosis of left ventricle hypertrophy etiologies
+
+Fusion Types:
 - Type I (ML+CNN): fuse extracted time domain ECG features with features from Echo CNN backbone --> MLP
 - Type II (CNN+CNN): fuse features from both ECG CNN and Echo CNN --> MLP
 
