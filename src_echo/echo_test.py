@@ -97,7 +97,7 @@ if __name__ == "__main__":
         # print('model loaded, training now')
 
         # train and evaluate
-        model_ft = torch.load('/home/owen/Datacenter_storage/CardioOncology/CODE/jason/redo_james/t13_outputs/resnext101_best.pth')
+        model_ft = torch.load(params['save_path'] + '/resnext101_best.pth')
 
         pt_ids, true_labels, pred_labels, score_0, score_1, score_2 = training_base.model_predict(device, model_ft, dataloaders_dict)
 
@@ -108,6 +108,6 @@ if __name__ == "__main__":
         results.score_0 = score_0
         results.score_1 = score_1
         results.score_2 = score_2
-        results.to_csv('/home/owen/Datacenter_storage/Owen/presentation_results.csv')
+        results.to_csv(params['save_path'] + 'results.csv')
 
 
