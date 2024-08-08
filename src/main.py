@@ -50,7 +50,9 @@ if __name__ == "__main__":
     """
     test_num = '_ovr2' # [1, 2, 3, 4, 5, 6, 7]
     cuda_num = 0
-    view = 'AP4' # [None, 'AP2', 'AP3', 'AP4', 'PLAX', 'PSAX_M', 'PSAX_V']
+    view = 'AP4' 
+    num_ecg_leads = len(params['focused_leads'])
+    num_ecg_features = 13*num_ecg_leads
     
     # reading command line inputs
     base_path = os.getcwd()
@@ -60,7 +62,7 @@ if __name__ == "__main__":
     params['save_path'] = './t{}_outputs/'.format(test_num)
     params['dataframe_pkl'] = 'datasplits_fusion.pkl'
     params['ecg_dir'] = '/home/owen/Datacenter_storage/ECG_project/Data/HTN_AMY_HCM/ECG/'
-    params['view'] = view  # None == use all views framewise, any other specific views means just use that view only ['PSAX_V' 'AP2' 'PSAX_M' 'AP3' 'AP4' 'PLAX']
+    params['view'] = view 
     
     os.makedirs(params['save_path'], exist_ok=True)
 
@@ -87,10 +89,10 @@ if __name__ == "__main__":
         device = torch.device("cuda:{}".format(cuda_num) if (torch.cuda.is_available() and params['ngpu'] > 0) else "cpu")
 
         # load and normalize ECG features
-        df_ecg = pd.read_csv('/home/owen/Datacenter_storage/Owen/ECG_Project/src/data/ECG_features_II_V1_norm.csv')
+        df_ecg = pd.read_csv('./data/ECG_features_II_V1.csv')
 
-        all_features = df_ecg[df_ecg.columns[-26:]]
-        meta_data = df_ecg[df_ecg.columns[:-26]]
+        all_features = df_ecg[df_ecg.columns[-num_ecg_features:]]
+        meta_data = df_ecg[df_ecg.columns[:-num_ecg_features]]
 
         scaler = MinMaxScaler(feature_range=(0,1))
         X = pd.DataFrame(scaler.fit_transform(all_features), columns=all_features.columns)
