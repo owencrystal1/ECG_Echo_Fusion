@@ -61,7 +61,7 @@ if __name__ == "__main__":
     params['base_path'] = base_path
     params['save_path'] = './t{}_outputs/'.format(test_num)
     params['dataframe_pkl'] = 'datasplits_fusion.pkl'
-    params['ecg_dir'] = '/home/owen/Datacenter_storage/ECG_project/Data/HTN_AMY_HCM/ECG/'
+    params['ecg_dir'] = './ECG/' # input path to ECG files
     params['view'] = view 
     
     os.makedirs(params['save_path'], exist_ok=True)
