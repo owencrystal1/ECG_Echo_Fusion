@@ -4,6 +4,7 @@ Fusion Types:
 - Type I (ML+CNN): fuse extracted time domain ECG features with features from Echo CNN backbone --> MLP
 - Type II (CNN+CNN): fuse features from both ECG CNN and Echo CNN --> MLP
 
+src folder:
 main.py
 - parameters are initialized in 'params' variable
 - dataloaders are created based on ecg_fusion_type (dataloader_base.py)
