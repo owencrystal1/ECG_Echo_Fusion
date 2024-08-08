@@ -29,7 +29,7 @@ model_base.py
 - ECG_ML_Echo_CNN_Fusion(): for Type I Fusion
   - loads in ResNext101 (or other architecture for echo CNN)
   - fc_layers defined in order to downsample the output features from the Echo CNN backbone
-  - time domain ECG features concatenated with extracted, downsampled Eco features (both of the same length)
+  - normalized time domain ECG features are fed throug MLP and ten concatenated with extracted, downsampled Echo features (both of the same length)
   - concatenated feature vector fed into final_mlp which downsamples to final 3 logits --> fed into cross entropy function during training
  
 training_base.py
@@ -44,3 +44,4 @@ training_base.py
   - classification reports generated for training and validation
   - all epoch-wise information stored in a logger
   - best model returned and saved
+  - model_predict generates performance metrics and saves ROC curves and confusion matrices
