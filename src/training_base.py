@@ -7,107 +7,38 @@ import time
 import pickle
 import numpy as np
 import torch
+import performance_metrics
+import torch.nn.functional as F
+import pandas as pd
 import torch.nn as nn
 from torchvision import transforms
 import torch.optim as optim
-from sklearn.metrics import roc_auc_score, roc_curve, precision_score, recall_score, f1_score, classification_report
+from sklearn.preprocessing import label_binarize
+from sklearn.metrics import roc_auc_score, roc_curve, precision_score, recall_score, f1_score, classification_report, accuracy_score, confusion_matrix, ConfusionMatrixDisplay
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from torch.optim.lr_scheduler import CyclicLR
 
 def train_epochs(param, device, model, dataloaders, criterion, optimizer, patience):
-    """Runs the model for the number of epochs given and keeps track of best weights and metrics"""
-
-    since = time.time()
-
-    best_model_wts = copy.deepcopy(model.state_dict())
-    best_acc = 0.0
-    best_auc = 0.0
-    best_f1 = 0.0
-    best_loss = 999.0
-
-    val_acc_history = []
-    val_auc_history = []
-    
-    for epoch in range(param['num_epochs']):
-        
-        print('-' * 10, file=param['logger'])
-        print('Epoch {}/{}'.format(epoch + 1, param['num_epochs']), file=param['logger'])
-        print('-' * 10, file=param['logger'])
-
-        model, epoch_val_acc, epoch_val_loss, epoch_val_precision, epoch_val_recall, epoch_f1 = train_epoch(
-            param, device, model, dataloaders, criterion, optimizer)
-
-        time_elapsed = time.time() - since
-        print('Epoch {} complete: {:.0f}m {:.0f}s'.format(epoch + 1, time_elapsed // 60, time_elapsed % 60), file=param['logger'])
-
-        # deep copy the model if the accuracy and auc improves
-        if param['optim_metric'] == 'accuracy':
-            if epoch_val_acc > best_acc:
-                best_loss = epoch_val_loss
-                best_acc = epoch_val_acc
-                best_f1 = epoch_f1
-                last_improvement_epoch = epoch
-                best_model_wts = copy.deepcopy(model.state_dict())
-                print('Improved ACC, Updated weights \n', file=param['logger'])
-        elif param['optim_metric'] == 'f1':
-            if epoch_f1 > best_f1:
-                best_loss = epoch_val_loss
-                best_acc = epoch_val_acc
-                best_f1 = epoch_f1
-                last_improvement_epoch = epoch
-                best_model_wts = copy.deepcopy(model.state_dict())
-                print('Improved f1, Updated weights \n', file=param['logger'])
-        else:
-            if epoch_val_loss < best_loss:
-                best_loss = epoch_val_loss
-                best_acc = epoch_val_acc
-                last_improvement_epoch = epoch
-                best_model_wts = copy.deepcopy(model.state_dict())
-                print('Improved loss, Updated weights \n', file=param['logger'])
-        param['logger'].flush()
-        val_acc_history.append(epoch_val_acc)
-
-        if param['save_every_epoch']:
-            model.load_state_dict(best_model_wts)
-            torch.save(model, param['save_path'] + '{}.pth'.format(param['model_name']))
-            pickle.dump(val_acc_history, open(param['save_path'] + "{}_acc_history.p".format(param['model_name']), "wb"))
-
-            # save plots for the best ones
-            # train_acc_hist = [h for h in val_acc_history]
-            # plt.title("Validation Accuracy vs. Number of Training Epochs")
-            # plt.xlabel("Training Epochs")
-            # plt.ylabel("Validation Accuracy")
-            # plt.plot(range(1, epoch+2), train_acc_hist)
-            # plt.ylim((0, 1.))
-            # plt.xticks(np.arange(1, epoch+2, 1.0))
-            # plt.savefig(param['save_path'] + '{}_val_acc.png'.format(param['model_name']))
-            # # clear figure to generate new one for AUC
-            # plt.clf()
-        # check if last improved epoch exceeds patience, stop training - early stopping
-        if (epoch - last_improvement_epoch) >= patience:
-            break
-
-    time_elapsed = time.time() - since
-    print('Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60), file=param['logger'])
-    print('Best val Acc: {:4f}'.format(best_acc), file=param['logger'])
-    print('Best val AUC: {:4f}'.format(best_auc), file=param['logger'])
-
-    model.load_state_dict(best_model_wts)
-    return model, val_acc_history, val_auc_history
-
-def new_train_epochs(param, device, model, dataloaders, criterion, optimizer, patience, ap4_wts):
 
     train_losses = []
     val_losses = []
-    num_epochs = 50
+    num_epochs = 100
 
     early_stopping_patience = patience
     early_stopping_counter = 0
     best_val_loss = float('inf')
     best_epoch = 0
     best_model_state = None
+
+    if param['OvR']:
+        criterion = WeightedOvRLoss()
+        print('One vs. Rest classification selected.')
+    
+    if param['scheduler'] == 'cyclic':
+        scheduler = CyclicLR(optimizer, base_lr=1e-8, max_lr=1e-5, step_size_up=1300)
 
     optimizer.zero_grad()
 
@@ -139,7 +70,10 @@ def new_train_epochs(param, device, model, dataloaders, criterion, optimizer, pa
                 _, preds = torch.max(softmax(outputs), 1)
             
                 # Compute loss
-                loss = criterion(outputs, labels)
+                if param['OvR']:
+                    loss, _ = criterion(outputs, labels, device)
+                else:
+                    loss = criterion(outputs, labels)
 
                 loss.backward()
                 optimizer.step()
@@ -150,6 +84,7 @@ def new_train_epochs(param, device, model, dataloaders, criterion, optimizer, pa
 
         epoch_train_loss = running_train_loss / len(dataloaders[phase])
         train_losses.append(epoch_train_loss)
+        print('Training Classification Report:')
         print(classification_report(train_labels, train_preds), file=param['logger'])
 
         model.eval()  # Set model to evaluation mode
@@ -169,10 +104,16 @@ def new_train_epochs(param, device, model, dataloaders, criterion, optimizer, pa
                 ecg_features = ecg_features.to(device)
 
                 outputs = model(inputs, ecg_features)
+                outputs = outputs.to(device)
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item() # counting te number of correct values
-                val_loss = criterion(outputs, labels)
+
+                if param['OvR']:
+                    val_loss, _ = criterion(outputs, labels, device)
+                else:
+                    val_loss = criterion(outputs, labels)
+
                 running_val_loss += val_loss.item()
 
                 true_labels.extend(labels.data.tolist())
@@ -184,11 +125,14 @@ def new_train_epochs(param, device, model, dataloaders, criterion, optimizer, pa
         val_acc = correct / total
         
         # Update the learning rate scheduler
-        #scheduler.step(epoch_val_loss)
+        if param['scheduler']:
+            scheduler.step(epoch_val_loss)
 
+        print('Validation Classification Report:', file=param['logger'])
+        print(classification_report(true_labels, pred_labels), file=param['logger'])
         print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f}, Val Acc: {val_acc:.4f}', file=param['logger'])
         print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f}, Val Acc: {val_acc:.4f}')
-        print(classification_report(true_labels, pred_labels), file=param['logger'])
+        
 
         # Early stopping logic
         if epoch_val_loss < best_val_loss:
@@ -218,121 +162,9 @@ def new_train_epochs(param, device, model, dataloaders, criterion, optimizer, pa
 
     return model
 
-        
 
 
-
-def train_epoch(param, device, model, dataloaders, criterion, optimizer):
-    """Train the model for one epoch and calculates different metrics for evaluation
-    Current metrics:
-        loss - based on the specific loss function
-        accuracy - number of correct classifications
-        roc_auc_score - to check for classification performance
-        precision_score - to check for classification performance
-        recall_score - to check for classification performance
-    Inputs:
-        device: cpu or gpu
-        GAN_aug: True/False
-        model: neural network
-        dataloaders: a dictionary of data loaders with the format = {'train': train_loader, 'val': test_loader}
-        criterion: loss function (nn.CrossEntropyLoss(), nn.BCELoss(), etc.)
-        optimizer: optimizer (optim.SGD(), optim.adam(), etc.)
-    Outputs:
-        model - to save the best weights
-        epoch_val_acc - to check for improvement
-        epoch_val_loss - to check for improvement
-        epoch_val_auc - to check for improvement
-        epoch_val_precision - to
-        epoch_val_recall
-        epoch_val_roc_curve
-    """
-
-    # Each epoch has a training and validation phase
-    model.to(device)
-    
-    for phase in ['train', 'val']:
-        if phase == 'train':
-            model.train()  # Set model to training mode
-        else:
-            model.eval()  # Set model to evaluate mode
-
-        running_loss = 0.0
-        running_corrects = 0
-        running_total_num = 0
-        running_num_true_hem = 0
-        running_num_pred_hem = 0
-        running_num_true_no_hem = 0
-        running_num_pred_no_hem = 0
-        true_labels = []
-        predict_pos_score = []
-        pred_labels = []
-        
-        batch = 0
-
-        for inputs, labels, IDs, ecg_features in dataloaders[phase]:
-            ecg_features = ecg_features.to(device)
-            inputs = inputs.to(device)
-            labels = labels.to(device)
-            
-            print('Phase: {}\tBatch: {}/{} ({:.2%})'.format(phase, batch, len(dataloaders[phase]), (batch/len(dataloaders[phase]))), end='\r')
-
-            batch += 1
-            optimizer.zero_grad()
-
-            
-            with torch.set_grad_enabled(phase == 'train'):
-                outputs = model(inputs, ecg_features)
-                loss = criterion(outputs, labels)
-
-                
-                # softmax used to make the range be [0-1]
-                softmax = nn.Softmax()
-                score = softmax(outputs)
-                # gets the prediction using the highest probability value
-                _, preds = torch.max(softmax(outputs), 1)
-
-                # gets the probability value of the positive class (for AUC, precision, recall calculations) only in
-                # binary classification
-                pos_score = score[:, 1]
-
-                # backward + optimize only if in training phase
-                if phase == 'train':
-                    loss.backward()
-                    optimizer.step()
-
-            # statistics
-            running_loss += loss.item() * inputs.size(0)
-            running_corrects += torch.sum(preds == labels.data)
-            running_total_num += preds.shape[0]
-            running_num_true_hem += torch.sum(labels.data == 1)
-            running_num_pred_hem += torch.sum(preds == 1)
-            running_num_true_no_hem += torch.sum(labels.data == 0)
-            running_num_pred_no_hem += torch.sum(preds == 0)
-            true_labels.extend(labels.data.tolist())
-            predict_pos_score.extend(pos_score.tolist())
-            pred_labels.extend(preds.tolist())
-
-        epoch_loss = running_loss / len(dataloaders[phase].dataset)
-        epoch_acc = running_corrects.double() / len(dataloaders[phase].dataset)
-        epoch_precision = precision_score(true_labels, pred_labels, average='micro')
-        epoch_recall = recall_score(true_labels, pred_labels, average='micro')
-        epoch_f1 = f1_score(true_labels, pred_labels, average='micro')
-
-        print(classification_report(true_labels, pred_labels), file=param['logger'])
-        print('{} Loss: {:.4f} Acc: {:.4f} Precision: {:.4f} Recall: {:.4f}  f1: {:.4f}\n'
-              .format(phase, epoch_loss, epoch_acc, epoch_precision, epoch_recall, epoch_f1), file=param['logger'])
-        param['logger'].flush()
-
-        if phase == 'val':
-            epoch_val_acc = epoch_acc
-            epoch_val_loss = epoch_loss
-            epoch_val_precision = epoch_precision
-            epoch_val_recall = epoch_recall
-
-    return model, epoch_val_acc, epoch_val_loss, epoch_val_precision, epoch_val_recall, epoch_f1
-
-
-def model_predict(device, model, dataloader):
+def model_predict(device, model, dataloader, params):
     """
     Uses the given model to predict on the dataloader data and output the true and predicted labels
     """
@@ -346,6 +178,7 @@ def model_predict(device, model, dataloader):
     score_1 = []
     score_2 = []
     pt_ids = []
+    ovr_probs = []
 
     for inputs, labels, IDs, ecg_features in tqdm(dataloader):
         inputs = inputs.to(device)
@@ -354,9 +187,15 @@ def model_predict(device, model, dataloader):
 
         with torch.set_grad_enabled(False):
             outputs = model(inputs, ecg_features)
-            softmax = nn.Softmax()
-            score = softmax(outputs)
-            _, preds = torch.max(softmax(outputs), 1)
+
+            if params['OvR']:
+                criterion = WeightedOvRLoss()
+                _, score = criterion(outputs, labels, weights, device)
+            else:
+                softmax = nn.Softmax()
+                score = softmax(outputs)
+                
+            _, preds = torch.max(score, 1)
             score_0_batch = score[:, 0]
             score_1_batch = score[:, 1]
             score_2_batch = score[:, 2]
@@ -368,27 +207,74 @@ def model_predict(device, model, dataloader):
             score_1.extend(score_1_batch.tolist())
             score_2.extend(score_2_batch.tolist())
 
-    return pt_ids, true_labels, pred_labels, score_0, score_1, score_2
+    results = pd.DataFrame(columns=['pt_id', 'true', 'pred', 'score_0', 'score_1', 'score_2'])
+    results.pt_id = pt_ids
+    results.true = true_labels
+    results.pred = pred_labels
+    results.score_0 = score_0
+    results.score_1 = score_1
+    results.score_2 = score_2
+    results.to_csv(params['save_path'] + 'slice_wise_predictions.csv')
+
+    df_avg = results.groupby('pt_id').agg({
+        'score_0': 'mean',
+        'score_1': 'mean',
+        'score_2': 'mean',
+        'true': 'mean'
+    }).reset_index()
+
+    df_avg['true'] = df_avg['true'].astype(int)
+
+    df_avg.to_csv(params['save_path'] + 'patient_wise_predictions.csv')
+
+    columns_to_keep = ['score_0', 'score_1', 'score_2']
+
+    new_df = df_avg[columns_to_keep].copy()
+
+    y_true = df_avg.true.values
+
+    y_label = label_binarize(y_true.astype(int), classes=[0,1,2])
+
+    thresholds = performance_metrics.Find_Optimal_Cutoff(y_label, new_df.values, 3)
+
+    thresh_preds = performance_metrics.generate_metrics(y_true.astype(int), new_df.values, thresholds)
+
+    performance_metrics.get_performance_metrics(y_true.astype(int), np.array(thresh_preds))
+    performance_metrics.get_metrics(y_true.astype(int), new_df.values,3, ['II', 'V1'], params['save_path'])
+
+    cm = confusion_matrix(y_true.astype(int),np.array(thresh_preds))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+    disp.plot(cmap=plt.cm.Blues, colorbar=False)
+    plt.xticks(ticks=[0,1,2],labels=['AMY','HCM','HTN'])
+    plt.yticks(ticks=[0,1,2],labels=['AMY','HCM','HTN'])
+    plt.title('Joint Fusion Model')
+    plt.savefig(params['save_path'] + 'confusion_matrix.png')
+    print('Confusion matrix saved!')
+
+class WeightedOvRLoss(nn.Module):
+    def __init__(self):
+        super(WeightedOvRLoss, self).__init__()
+
+    def forward(self, inputs, targets, device):
+        out1, out2, out3 = torch.sigmoid(inputs).unbind(1) # probability of that class for each 
+        batch_out = torch.sigmoid(inputs)
+        # create array of zeros that is 32x3
+        one_hot_matrix = np.zeros((len(targets), 3), dtype=int)
+    
+        # Set the appropriate indices to 1
+        for i, label in enumerate(targets):
+            one_hot_matrix[i, label] = 1
+        one_hot_matrix = torch.tensor(one_hot_matrix, dtype=torch.float)
+        one_hot_matrix = one_hot_matrix.to(device)
 
 
-class WeightedFocalLoss(nn.Module):
-    "Non weighted version of Focal Loss"
-    def __init__(self, weights=None, alpha=.25, gamma=2):
-        super(WeightedFocalLoss, self).__init__()
-        self.weights = weights
-        self.alpha = torch.tensor([alpha, 1-alpha]).cuda()
-        self.gamma = gamma
+        loss1 = F.binary_cross_entropy(out1, torch.tensor(one_hot_matrix[:,0], dtype=torch.float))
+        loss2 = F.binary_cross_entropy(out2, torch.tensor(one_hot_matrix[:,1], dtype=torch.float)) 
+        loss3 = F.binary_cross_entropy(out3, torch.tensor(one_hot_matrix[:,2], dtype=torch.float))
 
-    def forward(self, inputs, targets):
-        if self.weights != None:
-            CE_loss = nn.functional.cross_entropy(inputs, targets, weight=self.weights, reduction='none')
-        else:
-            CE_loss = nn.functional.cross_entropy(inputs, targets, reduction='none')
-        targets = targets.type(torch.long)
-        at = self.alpha.gather(0, targets.data.view(-1))
-        pt = torch.exp(-CE_loss)
-        F_loss = at*(1-pt)**self.gamma * CE_loss
-        return F_loss.mean()
+        loss = (loss1 + loss2 + loss3)/3
+
+        return loss, batch_out
 
 
 

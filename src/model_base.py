@@ -15,7 +15,7 @@ def set_parameter_requires_grad(model, feature_extracting):
             param.requires_grad = False
 
 class ECG_CNN(nn.Module):
-        def __init__(self, num_conv_layers=num_conv_layers, in_channels=2, first_layer_filters=first_layer_filters, num_classes=num_classes, kernel_size=kernel_size):
+        def __init__(self, num_conv_layers=6, in_channels=2, first_layer_filters=128, num_classes=3, kernel_size=7):
             super(ECG_CNN, self).__init__()
 
             self.num_conv_layers = num_conv_layers
@@ -145,65 +145,74 @@ class ECG_CNN_Echo_CNN_Fusion(nn.Module):
 
 
 class ECG_ML_Echo_CNN_Fusion(nn.Module):
-    def __init__(self):
+    def __init__(self, weight_type):
         super(ECG_ML_Echo_CNN_Fusion, self).__init__()
 
-        # Echo CNN
-        self.model_ft = models.resnext101_32x8d(pretrained=True) # adjust to false when using AP4 weights
+        if weight_type == 'AP4':
+
+            ap4_model = torch.load('./models/AP4_resnext101_best.pth')
+
+            self.model_ft = nn.Sequential(*list(ap4_model.children())[:-1])
+
+        else:
+            self.model_ft = models.resnext101_32x8d(pretrained=True) 
 
         # downsample output features from Echo CNN
         self.fc_layers = nn.Sequential(
-                nn.Linear(1000, 512),
+                nn.Linear(2048, 512), # set to 1000 if using imagenet, 2048 for AP4
                 nn.ReLU(),
                 nn.Dropout(0.10),
                 nn.Linear(512, 128),
                 nn.ReLU(),
-                nn.Linear(128, 26),
-                #nn.ReLU(),
-                #nn.Linear(32, 26)
+                nn.Linear(128, 32),
+                nn.ReLU(),
+                nn.Linear(32, 16),
+                nn.ReLU(),
+                nn.Linear(16, 8) # output of 8
+            )
+        self.ecg_mlp = nn.Sequential(
+                    nn.Linear(26, 16),
+                    nn.ReLU(),
+                    nn.Dropout(0.10),
+                    nn.Linear(16, 8)
+                    # output of 8
             )
         
         # get 3 value output using fusion input
         self.final_mlp = nn.Sequential(
-                    nn.Linear(52, 16),
-                    nn.ReLU(),
-                    nn.Dropout(0.10),
+                    #nn.Linear(52, 16),
+                    #nn.ReLU(),
+                    #nn.Dropout(0.10),
                     nn.Linear(16, 8),
                     nn.ReLU(),
                     nn.Linear(8, 3)
                 )
-
-    # def embeddings(self, input):
-
-    #     # extract feature embedding from Echo CNN ResNext101
-    #     x = self.model_ft.conv1(input)
-    #     x = self.model_ft.bn1(x)
-    #     x = self.model_ft.relu(x)
-    #     x = self.model_ft.maxpool(x)
-    #     x = self.model_ft.layer1(x)
-    #     x = self.model_ft.layer2(x)
-    #     x = self.model_ft.layer3(x)
-    #     x = self.model_ft.layer4(x)
-    #     x = self.model_ft.avgpool(x)
-
-    #     return x
 
     
 
     def forward(self, echo_input, ecg_input):
 
         # extract Echo features from ResNext101
-        #features = self.embeddings(echo_input)
+        # features = self.embeddings(echo_input)
+        
 
         features = self.model_ft(echo_input) # 1000
+        
+        
 
-        #features = features.squeeze()
-        # downsample Echo features to 26 to match 
+        features = features.squeeze()
+
+
+        # downsample Echo features to 8 to match 
         down_feats = self.fc_layers(features)
+
+        ecg_input = ecg_input.float()
+
+        ecg_features = self.ecg_mlp(ecg_input)
 
 
         # concatenate Echo features with 26 time domain ecg features
-        concat_feats = torch.concat([ecg_input.float(), down_feats.float()], dim=1)
+        concat_feats = torch.concat([ecg_features.float(), down_feats.float()], dim=1)
 
         # feed concatenated features into final MLP thats output has 3 values (softmax in training base code)
         output = self.final_mlp(concat_feats)
